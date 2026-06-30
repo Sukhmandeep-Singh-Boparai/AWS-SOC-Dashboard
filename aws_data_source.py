@@ -27,29 +27,32 @@ fields @timestamp, @message
 """
 
 
-def _run_cw_logs_query(log_group_name, hours=24):
+def _run_cw_logs_query(log_group_name, hours=1):
     logs = _client("logs")
     if not logs:
         return []
-    try:
-        start = int((datetime.utcnow() - timedelta(hours=hours)).timestamp())
-        end = int(datetime.utcnow().timestamp())
-        resp = logs.start_query(
-            logGroupName=log_group_name,
-            startTime=start,
-            endTime=end,
-            queryString=CW_QUERY,
-        )
-        query_id = resp["queryId"]
-        import time as _time
-        for _ in range(20):
-            _time.sleep(1)
-            result = logs.get_query_results(queryId=query_id)
-            if result["status"] == "Complete":
-                return result.get("results", [])
-        return []
-    except Exception:
-        return []
+    now_ts = datetime.utcnow().timestamp()
+    start = int(now_ts - hours * 3600)
+    end = int(now_ts)
+    for attempt_start in [start, 0]:
+        try:
+            resp = logs.start_query(
+                logGroupName=log_group_name,
+                startTime=attempt_start,
+                endTime=end,
+                queryString=CW_QUERY,
+            )
+            query_id = resp["queryId"]
+            import time as _time
+            for _ in range(20):
+                _time.sleep(1)
+                result = logs.get_query_results(queryId=query_id)
+                if result["status"] == "Complete":
+                    return result.get("results", [])
+            return []
+        except Exception:
+            continue
+    return []
 
 
 def _list_log_groups():
@@ -193,7 +196,7 @@ def fetch_findings():
     # ── CloudWatch Logs Insights ────────────────────
     log_groups = _list_log_groups()
     for lg in log_groups:
-        results = _run_cw_logs_query(lg, hours=24)
+        results = _run_cw_logs_query(lg, hours=1)
         for row in results:
             fields = {f["field"]: f.get("value", "") for f in row}
             msg = fields.get("@message", "")
@@ -218,7 +221,7 @@ def fetch_findings():
             })
 
     # ── CloudTrail events ──────────────────────────
-    for event in _fetch_cloudtrail_events(hours=24):
+    for event in _fetch_cloudtrail_events(hours=1):
         msg = event.get("CloudTrailEvent", "{}")
         try:
             ev = json.loads(msg)

@@ -71,8 +71,7 @@ st.html("""
 df = fetch_findings()
 
 if df.empty:
-    st.warning("No findings found from AWS or local files. Ensure AWS credentials are configured or run `log_analyzer.py` first.")
-    st.stop()
+    st.warning("No findings from AWS or local files. Re-run the dashboard once CloudWatch data or local reports are available.")
 
 # ==================================================
 # AUTO-REFRESH (every 30 seconds, background JS)
