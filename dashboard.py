@@ -1,12 +1,12 @@
 import streamlit as st
 import pandas as pd
 import json
-import time
 from pathlib import Path
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
 from streamlit_option_menu import option_menu
+from streamlit_autorefresh import st_autorefresh
 from aws_data_source import fetch_findings, fetch_ec2_instances, fetch_ec2_metrics, fetch_log_groups
 
 # ==================================================
@@ -75,22 +75,15 @@ if df.empty:
     st.stop()
 
 # ==================================================
-# AUTO-REFRESH (every 30 seconds)
+# AUTO-REFRESH (every 30 seconds, background JS)
 # ==================================================
 
-if "last_refresh" not in st.session_state:
-    st.session_state.last_refresh = time.time()
+if "refresh_count" not in st.session_state:
     st.session_state.refresh_count = 0
 
-now = datetime.now()
-elapsed = time.time() - st.session_state.last_refresh
-if elapsed >= 30:
-    st.session_state.last_refresh = time.time()
-    st.session_state.refresh_count += 1
-    st.rerun()
-
-REFRESH_INTERVAL = 30
-next_refresh_in = max(0, int(REFRESH_INTERVAL - elapsed))
+refresh_count = st_autorefresh(interval=30000, key="auto_refresh")
+if refresh_count > st.session_state.refresh_count:
+    st.session_state.refresh_count = refresh_count
 
 # ==================================================
 # HELPERS
@@ -309,6 +302,7 @@ score = calculate_score(filtered_df)
 # HEADER
 # ==================================================
 
+now = datetime.utcnow()
 st.markdown(f"""
 <div class="app-header">
   <div>
@@ -318,7 +312,6 @@ st.markdown(f"""
   <div class="meta">
     <div class="soc-eyebrow"><span class="soc-dot"></span> LIVE · {st.session_state.refresh_count} refreshes</div>
     <div style="margin-top:4px;">{now.strftime('%Y-%m-%d · %H:%M:%S UTC')}</div>
-    <div style="margin-top:2px;font-size:11px;color:var(--accent);">next refresh in {next_refresh_in}s</div>
   </div>
 </div>
 """, unsafe_allow_html=True)

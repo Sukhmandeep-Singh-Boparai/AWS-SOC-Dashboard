@@ -3,3 +3,4 @@ pandas>=1.5
 plotly>=5.14
 boto3>=1.26
 streamlit-option-menu>=0.3
+streamlit-autorefresh>=1.0
