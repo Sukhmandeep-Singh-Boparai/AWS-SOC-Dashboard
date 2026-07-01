@@ -27,3 +27,7 @@ streamlit run dashboard.py
 ```
 
 Requires AWS credentials configured via `~/.aws/credentials` or environment variables.
+
+**SCREENSHOT**
+
+<img width="1907" height="997" alt="Screenshot 2026-07-01 103011" src="https://github.com/user-attachments/assets/90f002fb-2a62-46e9-a337-bdaeb284bfbb" />
