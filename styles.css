@@ -300,3 +300,32 @@ div[data-testid="stDecoration"], div[data-testid="stStatusWidget"],
   padding: 20px 22px;
   margin-bottom: 16px;
 }
+
+/* ── st.tabs dark theme ── */
+.stTabs [data-baseweb="tab-list"] {
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+}
+.stTabs [data-baseweb="tab"] {
+  color: var(--muted);
+  font-family: "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 16px;
+  background: transparent;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  transition: color .15s, border-color .15s;
+}
+.stTabs [data-baseweb="tab"]:hover {
+  color: var(--text);
+  border-bottom-color: var(--border-strong);
+}
+.stTabs [aria-selected="true"] {
+  color: var(--accent) !important;
+  border-bottom-color: var(--accent) !important;
+}
+.stTabs [data-baseweb="tab-highlight"] {
+  display: none;
+}

@@ -6,8 +6,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 import plotly.express as px
 import plotly.graph_objects as go
-from streamlit_option_menu import option_menu
-from aws_data_source import fetch_findings, fetch_ec2_instances, fetch_ec2_metrics, fetch_log_groups, fetch_raw_logs, _determine_severity, SECURITY_PATTERN
+from aws_data_source import fetch_findings, fetch_ec2_instances, fetch_ec2_metrics, fetch_log_groups, fetch_raw_logs, fetch_pipeline_status, get_log_entry_severity
 
 # ==================================================
 # PAGE CONFIG
@@ -18,12 +17,6 @@ st.set_page_config(
     page_icon="◆",
     layout="wide",
     initial_sidebar_state="expanded",
-)
-
-# Auto-refresh every 60 seconds via meta refresh (no terminal tracebacks on shutdown)
-st.markdown(
-    '<meta http-equiv="refresh" content="60">',
-    unsafe_allow_html=True
 )
 
 # ==================================================
@@ -74,7 +67,7 @@ st.html("""
 # LOAD INCIDENTS (live AWS → local fallback)
 # ==================================================
 
-_CACHE_VERSION = 3
+_CACHE_VERSION = 6
 if st.session_state.get("findings_cache_ver") != _CACHE_VERSION:
     fetch_findings.clear()
     st.session_state.findings_cache_ver = _CACHE_VERSION
@@ -82,26 +75,38 @@ if st.session_state.get("findings_cache_ver") != _CACHE_VERSION:
 df = fetch_findings()
 
 if df.empty:
-    st.warning("No findings from AWS or local files. Re-run the dashboard once CloudWatch data or local reports are available.")
-    with st.expander("Diagnostics — why is there no data?"):
-        st.markdown("**1. Log groups found via CloudWatch API:**")
-        try:
-            logs = boto3.client("logs")
-            groups = logs.describe_log_groups()
-            if groups.get("logGroups"):
-                for lg in groups["logGroups"]:
-                    st.code(f"{lg['logGroupName']}  (retention: {lg.get('retentionInDays', 'never')}d)")
-            else:
-                st.code("No log groups found")
-        except Exception as e:
-            st.code(f"API error: {e}")
-        st.markdown("**2. Last 5 min of /ec2/auth.log (raw CloudWatch):**")
-        from aws_data_source import _run_cw_logs_query
-        sample = _run_cw_logs_query("/ec2/auth.log", hours=1)
-        if sample:
-            st.code(sample[:3])
-        else:
-            st.code("No results — CloudWatch agent may not be shipping logs yet")
+    pipe = fetch_pipeline_status()
+    total = pipe["raw_logs_seen"]
+    matched = pipe["security_matches"]
+    filtered = pipe["ubuntu_filtered"]
+
+    if total == 0:
+        st.warning("No findings from AWS or local files.")
+    with st.expander("Diagnostics — pipeline status"):
+        import os
+        sess = boto3.Session()
+        st.markdown("**AWS Config:**")
+        st.code(f"Region: {sess.region_name or '(not set)'}")
+        st.code(f"Profile: {os.environ.get('AWS_PROFILE', 'default')}")
+        creds = sess.get_credentials()
+        st.code(f"Credentials: {'OK' if creds else 'MISSING'}")
+        if creds:
+            st.code(f"Access Key: {creds.access_key[:4]}...{creds.access_key[-4:]}")
+
+        st.markdown("**Log groups found:**")
+        for lg in pipe["log_groups"]:
+            st.code(f"  {lg}")
+        st.markdown(f"**Raw log entries scanned:** `{total}`")
+        st.markdown(f"**Security pattern matches:** `{matched}`")
+        st.markdown(f"**Filtered (ubuntu sudo):** `{filtered}`")
+        st.markdown(f"**Incidents generated:** `{matched - filtered}`")
+
+        if total > 0:
+            st.markdown("**Sample raw entry:**")
+            from aws_data_source import _run_cw_logs_query
+            sample = _run_cw_logs_query("/ec2/auth.log", hours=1)
+            if sample:
+                st.code(sample[0])
     # ensure expected columns exist so downstream code doesn't KeyError
     df = pd.DataFrame(columns=["severity", "source_ip", "incident_id", "hostname",
                                 "username", "timestamp", "finding_type", "attack_count",
@@ -223,35 +228,6 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    selected = option_menu(
-        menu_title=None,
-        options=["Dashboard", "Investigations", "Case Management", "Analytics", "Compliance", "Log Explorer", "System Audit"],
-        icons=["grid-1x2", "search", "folder2-open", "graph-up", "shield-check", "terminal", "cpu"],
-        default_index=0,
-        key="nav_menu",
-        styles={
-            "container": {"padding": "0", "background-color": "transparent"},
-            "icon": {"color": "#8B929C", "font-size": "14px"},
-            "nav-link": {
-                "font-size": "13px",
-                "font-weight": "500",
-                "color": "#B8BFCA",
-                "padding": "9px 12px",
-                "margin": "2px 0",
-                "border-radius": "6px",
-                "--hover-color": "#161A20",
-                "font-family": "Inter, sans-serif",
-            },
-            "nav-link-selected": {
-                "background-color": "#161A20",
-                "color": "#FFFFFF",
-                "font-weight": "500",
-                "border-left": "2px solid #4F8CFF",
-                "border-radius": "6px",
-            },
-        },
-    )
-
     st.markdown('<div class="sb-section">EC2 Instance</div>', unsafe_allow_html=True)
     instances = fetch_ec2_instances()
     non_terminated = [i for i in instances if i["State"] != "terminated"]
@@ -330,17 +306,20 @@ with st.sidebar:
 
     st.markdown('<div class="sb-section">Filters</div>', unsafe_allow_html=True)
 
-    severity_critical = st.checkbox("CRITICAL", value=True, key="sev_critical")
-    severity_high = st.checkbox("HIGH", value=True, key="sev_high")
-    severity_medium = st.checkbox("MEDIUM", value=True, key="sev_medium")
-    severity_low = st.checkbox("LOW", value=False, key="sev_low")
-    severity_filter = []
-    if severity_critical: severity_filter.append("CRITICAL")
-    if severity_high: severity_filter.append("HIGH")
-    if severity_medium: severity_filter.append("MEDIUM")
-    if severity_low: severity_filter.append("LOW")
+    with st.form("filter_form"):
+        severity_critical = st.checkbox("CRITICAL", value=True, key="sev_critical")
+        severity_high = st.checkbox("HIGH", value=True, key="sev_high")
+        severity_medium = st.checkbox("MEDIUM", value=True, key="sev_medium")
+        severity_low = st.checkbox("LOW", value=False, key="sev_low")
+        ip_search = st.text_input("Source IP", placeholder="Filter by source IP…", label_visibility="collapsed", key="ip_search")
+        st.form_submit_button("Apply Filters", use_container_width=True, type="primary")
 
-    ip_search = st.text_input("Source IP", placeholder="Filter by source IP…", label_visibility="collapsed")
+    severity_filter = []
+    if st.session_state.get("sev_critical", True): severity_filter.append("CRITICAL")
+    if st.session_state.get("sev_high", True): severity_filter.append("HIGH")
+    if st.session_state.get("sev_medium", True): severity_filter.append("MEDIUM")
+    if st.session_state.get("sev_low", False): severity_filter.append("LOW")
+    ip_search = st.session_state.get("ip_search", "")
 
 # ==================================================
 # FILTERING
@@ -381,8 +360,7 @@ if saved_cases:
                 if k in case:
                     filtered_df.at[i, k] = case[k]
 
-current_tab = st.session_state.get("nav_menu", selected)
-if closed_ids and current_tab != "Case Management":
+if closed_ids:
     filtered_df = filtered_df[~filtered_df["incident_id"].isin(closed_ids)]
 
 score = calculate_score(filtered_df)
@@ -396,50 +374,157 @@ now = datetime.now(timezone.utc)
 # restart banner
 _restart_banner = st.session_state.pop("restart_banner", False)
 
-_initial_time = now.strftime('%Y-%m-%d · %H:%M:%S')
-st.markdown(f"""
+if "session_start" not in st.session_state:
+    st.session_state.session_start = now
+
+@st.fragment(run_every=1)
+def _render_header():
+    _now = datetime.now(timezone.utc)
+    _uptime = int((_now - st.session_state.session_start).total_seconds())
+    _ts = _now.strftime('%Y-%m-%d · %H:%M:%S')
+    st.html(f"""
 <div class="app-header">
   <div>
     <div class="brand-eyebrow">AWS · Security Operations Center</div>
     <h1>Command Center</h1>
   </div>
   <div class="meta">
-    <div class="soc-eyebrow"><span class="soc-dot"></span> LIVE · <span id="live-counter">0</span>s uptime</div>
-    <div style="margin-top:4px;"><span id="live-clock">{_initial_time}</span> UTC</div>
+    <div class="soc-eyebrow"><span class="soc-dot"></span> LIVE · {_uptime}s uptime</div>
+    <div style="margin-top:4px;">{_ts} UTC</div>
   </div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
-st.markdown("""
-<script>
-(function(){
-  function c(){
-    var e=document.getElementById("live-clock");
-    if(e){var d=new Date();
-      var p=function(n){return n<10?"0"+n:""+n};
-      e.textContent=d.getUTCFullYear()+"-"+p(d.getUTCMonth()+1)+"-"+p(d.getUTCDate())+" · "+p(d.getUTCHours())+":"+p(d.getUTCMinutes())+":"+p(d.getUTCSeconds());
-    }
-  }
-  c();setInterval(c,1000);
-  var t0=Date.now();
-  function u(){
-    var e=document.getElementById("live-counter");
-    if(e)e.textContent=Math.floor((Date.now()-t0)/1e3);
-  }
-  u();setInterval(u,1000);
-})();
-</script>
-""", unsafe_allow_html=True)
+_render_header()
 
 if _restart_banner:
     st.toast("Instance restart detected — data refreshed", icon="🔄")
     st.info("Instance restart detected — all data has been refreshed from AWS APIs.", icon="🔄")
 
+# ── fragment-isolated tabs (widget reruns stay local) ──
+
+@st.fragment
+def _render_case_mgmt():
+    st.markdown(f"""<p style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:700;color:var(--text);letter-spacing:-0.02em;margin:0 0 4px 0;">Case Management</p>
+<p style="color:var(--muted);font-size:13px;margin:0 0 20px 0;">Incident workflow and investigation management</p>""", unsafe_allow_html=True)
+    incident_ids = filtered_df["incident_id"].tolist()
+    if not incident_ids:
+        st.warning("No incidents available with the current filters.")
+        return
+    selected_incident = st.selectbox("Incident", incident_ids)
+    incident = filtered_df[filtered_df["incident_id"] == selected_incident].iloc[0]
+    saved = Path("reports") / f"incident_{selected_incident}.json"
+    if saved.exists():
+        with open(saved, "r") as f:
+            saved_data = json.load(f)
+        for k in ["status","assigned_to","notes","action_taken","mitre_technique","mitre_tactic"]:
+            if k in saved_data:
+                incident[k] = saved_data[k]
+    st.html(f"""<div class="soc-card">{section_header_html("Finding Details", "Comprehensive incident information and workflow management")}""")
+    col1, col2 = st.columns([1,1], gap="large")
+    with col1:
+        st.markdown(f"""
+        <div style='line-height:2;'>
+          <div><span style='color:var(--muted);'>Severity</span> &nbsp; {sev_pill(incident['severity'])}</div>
+          <div><span style='color:var(--muted);'>Host</span> &nbsp; <code>{incident['hostname']}</code></div>
+          <div><span style='color:var(--muted);'>Username</span> &nbsp; <code>{incident['username']}</code></div>
+          <div><span style='color:var(--muted);'>Source IP</span> &nbsp; <code>{incident['source_ip']}</code></div>
+          <div><span style='color:var(--muted);'>Finding</span> &nbsp; {incident['finding_type']}</div>
+          <div><span style='color:var(--muted);'>Action</span> &nbsp; {incident.get('action_taken','—')}</div>
+          <div><span style='color:var(--muted);'>MITRE Technique</span> &nbsp; <code>{incident.get('mitre_technique','—')}</code></div>
+          <div><span style='color:var(--muted);'>MITRE Tactic</span> &nbsp; {incident.get('mitre_tactic','—')}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    with col2:
+        st.markdown("#### Workflow")
+        with st.form("case_form"):
+            status_opts = ["OPEN","INVESTIGATING","CONTAINED","RESOLVED","FALSE_POSITIVE"]
+            status = st.selectbox("Status", status_opts,
+                                  index=status_opts.index(incident.get("status","OPEN")))
+            analyst_opts = ["Unassigned","Analyst-01","Analyst-02","Analyst-03","Analyst-04"]
+            saved_analyst = incident.get("assigned_to","")
+            analyst = st.selectbox("Assigned Analyst", analyst_opts,
+                                   index=analyst_opts.index(saved_analyst) if saved_analyst in analyst_opts else 0)
+            notes = st.text_area("Investigation Notes", value=incident.get("notes",""), height=160)
+            if st.form_submit_button("Save Changes"):
+                if save_incident_changes(selected_incident, status, analyst, notes, incident):
+                    st.success("Case updated.")
+                else:
+                    st.error("Unable to update incident.")
+    st.html("</div>")
+
+@st.fragment
+def _render_log_explorer():
+    st.markdown(f"""<p style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:700;color:var(--text);letter-spacing:-0.02em;margin:0 0 20px 0;">Raw Log Explorer</p>""", unsafe_allow_html=True)
+    log_groups = fetch_log_groups()
+    ec2_groups = [g for g in log_groups if "ec2" in g]
+    with st.form("log_filter_form"):
+        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+        with col1:
+            selected_group = st.selectbox("Log Group", ec2_groups if ec2_groups else log_groups, key="log_group_sel", label_visibility="collapsed")
+        with col2:
+            lines_to_show = st.selectbox("Lines", [50, 100, 200, 500], index=1, key="log_lines", label_visibility="collapsed")
+        with col3:
+            search_text = st.text_input("Filter", placeholder="keyword…", key="log_search", label_visibility="collapsed")
+        with col4:
+            security_only = st.checkbox("Security only", value=True, key="log_sec_filter")
+        col1, col2, col3, _ = st.columns([1, 1, 1, 1])
+        with col2:
+            st.form_submit_button("Apply", use_container_width=True)
+    events = fetch_raw_logs(selected_group, limit=lines_to_show) if selected_group else []
+    events = list(reversed(events))
+    rows = []
+    for ev in events:
+        msg = ev.get("message", "")
+        ts = datetime.fromtimestamp(ev.get("timestamp", 0) / 1000, tz=timezone.utc).strftime("%H:%M:%S")
+        if search_text and search_text.lower() not in msg.lower():
+            continue
+        sev = get_log_entry_severity(msg)
+        if security_only and sev is None:
+            continue
+        if sev is not None:
+            tint = {"CRITICAL":"rgba(229,72,77,.06)","HIGH":"rgba(232,128,75,.06)","MEDIUM":"rgba(212,162,76,.06)"}.get(sev, "transparent")
+            border = {"CRITICAL":"var(--crit)","HIGH":"var(--high)","MEDIUM":"var(--med)"}.get(sev, "transparent")
+            sev_lbl = sev_pill(sev)
+        else:
+            tint = "transparent"
+            border = "transparent"
+            sev_lbl = "<span style='color:var(--muted);font-family:JetBrains Mono,monospace;font-size:.7rem;'>—</span>"
+        rows.append(
+            f"<tr style='background:{tint};'>"
+            f"<td style='padding:8px 10px;width:60px;color:var(--muted);font-size:.7rem;font-family:JetBrains Mono,monospace;'>{ts}</td>"
+            f"<td style='border-left:2px solid {border};padding:8px 10px;width:90px;'>{sev_lbl}</td>"
+            f"<td style='padding:8px 10px;font-family:JetBrains Mono,monospace;font-size:.78rem;color:var(--text);word-break:break-all;'>{msg.strip()}</td>"
+            f"</tr>"
+        )
+    st.caption(f"Showing {len(rows)} entries from {selected_group}")
+    html = f"""
+    <div style='border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface);'>
+      <table style='width:100%;border-collapse:collapse;'>
+        <thead>
+          <tr style='background:var(--surface-2);border-bottom:1px solid var(--border);'>
+            <th style='padding:10px;text-align:left;width:60px;color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;font-weight:500;'>Time</th>
+            <th style='padding:10px;text-align:left;width:90px;color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;font-weight:500;'>Severity</th>
+            <th style='padding:10px;text-align:left;color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;font-weight:500;'>Log Entry</th>
+          </tr>
+        </thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table>
+    </div>
+    <style>tbody tr + tr td {{ border-top:1px solid var(--border); }}</style>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
 # ==================================================
-# DASHBOARD (lovable-inspired redesign)
+# TABS — instant client-side switching (no reruns)
 # ==================================================
 
-if selected == "Dashboard":
+dash_tab, inv_tab, case_tab, anal_tab, comp_tab, log_tab, audit_tab = st.tabs([
+    "Dashboard", "Investigations", "Case Management",
+    "Analytics", "Compliance", "Log Explorer", "System Audit",
+])
+
+with dash_tab:
 
     crit = len(filtered_df[filtered_df["severity"] == "CRITICAL"])
     high = len(filtered_df[filtered_df["severity"] == "HIGH"])
@@ -587,80 +672,19 @@ if selected == "Dashboard":
 # INVESTIGATIONS
 # ==================================================
 
-elif selected == "Investigations":
+with inv_tab:
     st.markdown(f"""<p style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:700;color:var(--text);letter-spacing:-0.02em;margin:0 0 4px 0;">Investigation Console</p>
 <p style="color:var(--muted);font-size:13px;margin:0 0 20px 0;">{len(filtered_df)} findings match the current filters</p>""", unsafe_allow_html=True)
-
     cols = [c for c in ["timestamp","incident_id","severity","hostname","username","source_ip",
                         "attack_count","finding_type","status","assigned_to","action_taken"]
             if c in filtered_df.columns]
     st.markdown(f"""<div class="soc-card">{section_header_html("Investigation Console", f"{len(filtered_df)} findings match the current filters")}</div>""", unsafe_allow_html=True)
     st.dataframe(filtered_df[cols], use_container_width=True, height=720, hide_index=True)
 
-# ==================================================
-# CASE MANAGEMENT
-# ==================================================
+with case_tab:
+    _render_case_mgmt()
 
-elif selected == "Case Management":
-    st.markdown(f"""<p style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:700;color:var(--text);letter-spacing:-0.02em;margin:0 0 4px 0;">Case Management</p>
-<p style="color:var(--muted);font-size:13px;margin:0 0 20px 0;">Incident workflow and investigation management</p>""", unsafe_allow_html=True)
-    incident_ids = filtered_df["incident_id"].tolist()
-
-    if not incident_ids:
-        st.warning("No incidents available with the current filters.")
-    else:
-        selected_incident = st.selectbox("Incident", incident_ids)
-        incident = filtered_df[filtered_df["incident_id"] == selected_incident].iloc[0]
-
-        # load any previously saved case data
-        saved = Path("reports") / f"incident_{selected_incident}.json"
-        if saved.exists():
-            with open(saved, "r") as f:
-                saved_data = json.load(f)
-            for k in ["status","assigned_to","notes","action_taken","mitre_technique","mitre_tactic"]:
-                if k in saved_data:
-                    incident[k] = saved_data[k]
-
-        st.html(f"""<div class="soc-card">{section_header_html("Finding Details", "Comprehensive incident information and workflow management")}""")
-        col1, col2 = st.columns([1,1], gap="large")
-
-        with col1:
-            st.markdown(f"""
-            <div style='line-height:2;'>
-              <div><span style='color:var(--muted);'>Severity</span> &nbsp; {sev_pill(incident['severity'])}</div>
-              <div><span style='color:var(--muted);'>Host</span> &nbsp; <code>{incident['hostname']}</code></div>
-              <div><span style='color:var(--muted);'>Username</span> &nbsp; <code>{incident['username']}</code></div>
-              <div><span style='color:var(--muted);'>Source IP</span> &nbsp; <code>{incident['source_ip']}</code></div>
-              <div><span style='color:var(--muted);'>Finding</span> &nbsp; {incident['finding_type']}</div>
-              <div><span style='color:var(--muted);'>Action</span> &nbsp; {incident.get('action_taken','—')}</div>
-              <div><span style='color:var(--muted);'>MITRE Technique</span> &nbsp; <code>{incident.get('mitre_technique','—')}</code></div>
-              <div><span style='color:var(--muted);'>MITRE Tactic</span> &nbsp; {incident.get('mitre_tactic','—')}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        with col2:
-            st.markdown("#### Workflow")
-            with st.form("case_form"):
-                status_opts = ["OPEN","INVESTIGATING","CONTAINED","RESOLVED","FALSE_POSITIVE"]
-                status = st.selectbox("Status", status_opts,
-                                      index=status_opts.index(incident.get("status","OPEN")))
-                analyst_opts = ["Unassigned","Analyst-01","Analyst-02","Analyst-03","Analyst-04"]
-                saved_analyst = incident.get("assigned_to","")
-                analyst = st.selectbox("Assigned Analyst", analyst_opts,
-                                       index=analyst_opts.index(saved_analyst) if saved_analyst in analyst_opts else 0)
-                notes = st.text_area("Investigation Notes", value=incident.get("notes",""), height=160)
-                if st.form_submit_button("Save Changes"):
-                    if save_incident_changes(selected_incident, status, analyst, notes, incident):
-                        st.success("Case updated.")
-                    else:
-                        st.error("Unable to update incident.")
-        st.html("</div>")
-
-# ==================================================
-# ANALYTICS (lovable-inspired redesign)
-# ==================================================
-
-elif selected == "Analytics":
+with anal_tab:
     st.markdown(f"""<p style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:700;color:var(--text);letter-spacing:-0.02em;margin:0 0 4px 0;">Threat Analytics</p>
 <p style="color:var(--muted);font-size:13px;margin:0 0 20px 0;">Cross-dimensional security metrics, trend analysis, and intelligence overview</p>""", unsafe_allow_html=True)
 
@@ -707,7 +731,7 @@ elif selected == "Analytics":
 # COMPLIANCE (lovable-inspired new page)
 # ==================================================
 
-elif selected == "Compliance":
+with comp_tab:
     st.markdown(f"""<p style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:700;color:var(--text);letter-spacing:-0.02em;margin:0 0 4px 0;">Risk and Compliance</p>
 <p style="color:var(--muted);font-size:13px;margin:0 0 20px 0;">Live security control checks and compliance posture</p>""", unsafe_allow_html=True)
 
@@ -732,7 +756,7 @@ elif selected == "Compliance":
         streams = logs.describe_log_streams(logGroupName="/ec2/auth.log", orderBy="LastEventTime", descending=True, limit=1)
         if streams.get("logStreams"):
             last = streams["logStreams"][0].get("lastEventTimestamp", 0)
-            cw_active = (datetime.now(timezone.utc).timestamp() * 1000 - last) < 600000
+            cw_active = (datetime.now(timezone.utc).timestamp() * 1000 - last) < 1800000
     except Exception:
         pass
 
@@ -754,7 +778,7 @@ elif selected == "Compliance":
         ("LOG-02", "Auth log stream active", "Pass" if cw_active else "Fail", "receiving /var/log/auth.log"),
         ("MON-01", f"No CRITICAL findings ({critical_count})", "Pass" if critical_count == 0 else "Fail", f"{critical_count} active"),
         ("MON-02", f"Low severity threats ({high_count})", "Pass" if high_count == 0 else "Warn", f"{high_count} HIGH"),
-        ("NET-01", "SSH (22) not open to 0.0.0.0/0", sg_ssh_status, "security group ingress"),
+        ("NET-01", "SSH (22) scope to authorized IPs only", sg_ssh_status, "allowed: 223.236.110.209"),
         ("NET-02", "Instance health checks passing", "Pass" if health_ok else "Fail", "StatusCheckFailed"),
         ("BACK-01", "Automated backup policy applied", "Pass", "configured via AWS Backup"),
     ]
@@ -806,85 +830,14 @@ elif selected == "Compliance":
       <div style="display:grid;">{controls_html}</div>
     </div>""")
 
-# ==================================================
-# LOG EXPLORER
-# ==================================================
-
-elif selected == "Log Explorer":
-    st.markdown(f"""<p style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:700;color:var(--text);letter-spacing:-0.02em;margin:0 0 20px 0;">Raw Log Explorer</p>""", unsafe_allow_html=True)
-
-    log_groups = fetch_log_groups()
-    ec2_groups = [g for g in log_groups if "ec2" in g]
-
-    with st.form("log_filter_form"):
-        col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-        with col1:
-            selected_group = st.selectbox("Log Group", ec2_groups if ec2_groups else log_groups, key="log_group_sel", label_visibility="collapsed")
-        with col2:
-            lines_to_show = st.selectbox("Lines", [50, 100, 200, 500], index=1, key="log_lines", label_visibility="collapsed")
-        with col3:
-            search_text = st.text_input("Filter", placeholder="keyword…", key="log_search", label_visibility="collapsed")
-        with col4:
-            security_only = st.checkbox("Security only", value=True, key="log_sec_filter")
-        col1, col2, col3, _ = st.columns([1, 1, 1, 1])
-        with col2:
-            st.form_submit_button("Apply", use_container_width=True)
-
-    events = fetch_raw_logs(selected_group, limit=lines_to_show) if selected_group else []
-
-    events = list(reversed(events))
-    rows = []
-    for ev in events:
-        msg = ev.get("message", "")
-        ts = datetime.fromtimestamp(ev.get("timestamp", 0) / 1000, tz=timezone.utc).strftime("%H:%M:%S")
-        if search_text and search_text.lower() not in msg.lower():
-            continue
-        is_security = SECURITY_PATTERN.search(msg) is not None
-        if is_security:
-            sev = _determine_severity(msg)
-            if sev == "LOW":
-                is_security = False
-        if security_only and not is_security:
-            continue
-        if is_security:
-            tint = {"CRITICAL":"rgba(229,72,77,.06)","HIGH":"rgba(232,128,75,.06)","MEDIUM":"rgba(212,162,76,.06)"}.get(sev, "transparent")
-            border = {"CRITICAL":"var(--crit)","HIGH":"var(--high)","MEDIUM":"var(--med)"}.get(sev, "transparent")
-            sev_lbl = sev_pill(sev)
-        else:
-            tint = "transparent"
-            border = "transparent"
-            sev_lbl = "<span style='color:var(--muted);font-family:JetBrains Mono,monospace;font-size:.7rem;'>—</span>"
-        rows.append(
-            f"<tr style='background:{tint};'>"
-            f"<td style='padding:8px 10px;width:60px;color:var(--muted);font-size:.7rem;font-family:JetBrains Mono,monospace;'>{ts}</td>"
-            f"<td style='border-left:2px solid {border};padding:8px 10px;width:90px;'>{sev_lbl}</td>"
-            f"<td style='padding:8px 10px;font-family:JetBrains Mono,monospace;font-size:.78rem;color:var(--text);word-break:break-all;'>{msg.strip()}</td>"
-            f"</tr>"
-        )
-
-    st.caption(f"Showing {len(rows)} entries from {selected_group}")
-    html = f"""
-    <div style='border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--surface);'>
-      <table style='width:100%;border-collapse:collapse;'>
-        <thead>
-          <tr style='background:var(--surface-2);border-bottom:1px solid var(--border);'>
-            <th style='padding:10px;text-align:left;width:60px;color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;font-weight:500;'>Time</th>
-            <th style='padding:10px;text-align:left;width:90px;color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;font-weight:500;'>Severity</th>
-            <th style='padding:10px;text-align:left;color:var(--muted);font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;font-weight:500;'>Log Entry</th>
-          </tr>
-        </thead>
-        <tbody>{''.join(rows)}</tbody>
-      </table>
-    </div>
-    <style>tbody tr + tr td {{ border-top:1px solid var(--border); }}</style>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+with log_tab:
+    _render_log_explorer()
 
 # ==================================================
 # SYSTEM AUDIT
 # ==================================================
 
-elif selected == "System Audit":
+with audit_tab:
 
     st.markdown(f"""<p style="font-family:'Plus Jakarta Sans',sans-serif;font-size:20px;font-weight:700;color:var(--text);letter-spacing:-0.02em;margin:0 0 4px 0;">System Audit</p>
 <p style="color:var(--muted);font-size:13px;margin:0 0 20px 0;">Live EC2 instance metrics from CloudWatch</p>""", unsafe_allow_html=True)
