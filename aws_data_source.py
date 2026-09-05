@@ -31,6 +31,17 @@ def _load_trusted_users():
 AUTHORIZED_KEY_FINGERPRINTS = _load_trusted_fingerprints()
 TRUSTED_SSH_USERS = _load_trusted_users()
 
+
+def _load_trusted_cloudtrail_users():
+    """Load trusted IAM usernames from TRUSTED_CLOUDTRAIL_USERS env var."""
+    val = os.environ.get("TRUSTED_CLOUDTRAIL_USERS", "").strip()
+    if not val:
+        return set()
+    return {u.strip() for u in val.split(",") if u.strip()}
+
+TRUSTED_CLOUDTRAIL_USERS = _load_trusted_cloudtrail_users()
+
+
 if not AUTHORIZED_KEY_FINGERPRINTS:
     print("WARNING: TRUSTED_FINGERPRINTS is empty — every SSH login will be flagged as UNAUTHORIZED_KEY_ACCEPTED")
 
@@ -125,6 +136,10 @@ CLOUDTRAIL_MITRE_MAPPING = {
     "ConsoleLogin": (
         "T1078.004", "Valid Accounts: Cloud Accounts",
         "Defense Evasion"
+    ),
+    "ConsoleLoginFailure": (
+        "T1110", "Brute Force",
+        "Credential Access"
     ),
     "CreateAccessKey": (
         "T1098", "Account Manipulation",
@@ -737,20 +752,51 @@ def fetch_findings():
 
     # ── CloudTrail events ──────────────────────────
     for event in _fetch_cloudtrail_events(hours=6):
+        event_name = event.get("EventName", "")
         msg = event.get("CloudTrailEvent", "{}")
         try:
             ev = json.loads(msg)
         except Exception:
             ev = {}
         user = ev.get("userIdentity", {}).get("userName", "") or ev.get("userIdentity", {}).get("arn", "")
-        ct_finding_type = f"CloudTrail-{event.get('EventName', '')}"
+
+        # --- ConsoleLogin filtering ---
+        if event_name == "ConsoleLogin":
+            response = ev.get("responseElements", {})
+            login_status = response.get("ConsoleLogin", "")
+
+            if login_status == "Failure":
+                severity = "HIGH"
+                ct_finding_type = "CloudTrail-ConsoleLoginFailure"
+                failure_reason = ev.get("failureReason", "")
+                description = f"Failed ConsoleLogin by {user}"
+                if failure_reason:
+                    description += f": {failure_reason}"
+            elif login_status == "Success" and user in TRUSTED_CLOUDTRAIL_USERS:
+                # Successful login from trusted user → skip
+                continue
+            else:
+                # Successful login from untrusted user
+                severity = "MEDIUM"
+                ct_finding_type = f"CloudTrail-{event_name}"
+                description = f"{event_name} by {user}"
+        elif event_name == "CreateAccessKey":
+            severity = "LOW"
+            ct_finding_type = "CloudTrail-CreateAccessKey"
+            description = f"CreateAccessKey by {user}"
+        else:
+            # Any other CloudTrail event → keep at MEDIUM severity
+            severity = "MEDIUM"
+            ct_finding_type = f"CloudTrail-{event_name}"
+            description = f"{event_name} by {user}"
+
         ct_technique, ct_tactic = _lookup_mitre(ct_finding_type)
         incidents.append({
             "id": event.get("EventId", ""),
             "incident_id": event.get("EventId", "")[-12:],
             "timestamp": event.get("EventTime", ""),
             "source_ip": ev.get("sourceIPAddress", "N/A"),
-            "severity": "MEDIUM" if "ConsoleLogin" in str(event.get("EventName", "")) else "LOW",
+            "severity": severity,
             "finding_type": ct_finding_type,
             "hostname": "aws",
             "username": user[:50] if user else "",
@@ -759,7 +805,7 @@ def fetch_findings():
             "assigned_to": "",
             "notes": "",
             "action_taken": "",
-            "description": f"{event.get('EventName', '')} by {user}"[:200],
+            "description": description[:200],
             "mitre_technique": ct_technique,
             "mitre_tactic": ct_tactic,
         })
