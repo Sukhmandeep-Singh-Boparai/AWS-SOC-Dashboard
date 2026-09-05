@@ -6,15 +6,15 @@ A Streamlit-based Security Operations Center dashboard for real-time monitoring 
 
 The dashboard aggregates security events from three AWS data sources — CloudWatch Logs, CloudWatch Metrics, and CloudTrail — and presents them through a unified interface with seven functional views:
 
-| Tab              | Purpose                                                                                       |
-| :--------------- | :-------------------------------------------------------------------------------------------- |
-| **Dashboard**    | Overview with KPIs, severity charts, attacker table, activity feed                            |
-| **Investigations** | Filterable findings table with status and deduplication                                     |
-| **Case Management** | Incident workflow — assign analyst, add notes, close/resolution                            |
-| **Analytics**    | Severity distribution, top sources, targeted accounts, MITRE mapping                          |
-| **Compliance**   | Risk & compliance framework with 10 security controls                                         |
-| **Log Explorer** | Raw CloudWatch logs with severity filtering and Excel export                                  |
-| **System Audit** | Live EC2 metrics — CPU, network, status checks                                                |
+| Tab                 | Purpose                                                                                       |
+| :------------------ | :-------------------------------------------------------------------------------------------- |
+| **Dashboard**       | Overview with KPIs, severity charts, attacker table, activity feed                            |
+| **Investigations**  | Filterable findings table with status and deduplication                                       |
+| **Case Management** | Incident workflow — assign analyst, add notes, close/resolution                               |
+| **Analytics**       | Severity distribution, top sources, targeted accounts, MITRE mapping                          |
+| **Compliance**      | Risk & compliance framework with 10 security controls                                         |
+| **Log Explorer**    | Raw CloudWatch logs with severity filtering and Excel export                                  |
+| **System Audit**    | Live EC2 metrics — CPU, network, status checks                                                |
 
 ### Key capabilities
 
@@ -30,28 +30,28 @@ The dashboard aggregates security events from three AWS data sources — CloudWa
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                                                                                 │
-│  ┌──────────────────────┐       ┌─────────────────────┐       ┌─────────────────────────────┐  │
-│  │  Monitored EC2       │       │  SOC Dashboard       │       │  AWS Services              │  │
-│  │  (EC2 Instance)      │       │                      │       │                            │  │
-│  │                      │       │  Port 8501           │       │  ┌──────────────────────┐  │  │
-│  │  /var/log/auth.log   │──────▶│  systemd (soc-       │──────▶│  │ CloudWatch Logs      │  │  │
-│  │  /var/log/syslog     │       │  dashboard.service)  │       │  └──────────────────────┘  │  │
-│  │                      │       │                      │       │                            │  │
-│  │  CloudWatch Agent    │       │  ┌────────────────┐  │       │  ┌──────────────────────┐  │  │
-│  │  ──────────────────  │       │  │  Streamlit     │  │       │  │  CloudWatch Metrics  │  │  │
-│  │                      │       │  │  App           │  │       │  └──────────────────────┘  │  │
-│  └──────────────────────┘       │  │                │  │       │                            │  │
-│                                 │  │                │  │       │  ┌──────────────────────┐  │  │
-│                                 │  │  Tabs:         │  │       │  │  EC2 Describe API    │  │  │
-│                                 │  │  7 views       │  │       │  └──────────────────────┘  │  │
-│                                 │  │                │  │       │                            │  │
-│                                 │  └────────────────┘  │       │  ┌──────────────────────┐  │  │
-│                                 │                      │       │  │  CloudTrail          │  │  │
-│                                 │  ┌────────────────┐  │       │  └──────────────────────┘  │  │
+│  ┌──────────────────────┐       ┌──────────────────────┐       ┌─────────────────────────────┐  │
+│  │  Monitored EC2       │       │  SOC Dashboard       │       │  AWS Services               │  │
+│  │  (EC2 Instance)      │       │                      │       │                             │  │
+│  │                      │       │  Port 8501           │       │  ┌──────────────────────┐   │  │
+│  │  /var/log/auth.log   │──────▶│  systemd (soc-       │──────▶│  │ CloudWatch Logs      │   │  │
+│  │  /var/log/syslog     │       │  dashboard.service)  │       │  └──────────────────────┘   │  │
+│  │                      │       │                      │       │                             │  │
+│  │  CloudWatch Agent    │       │  ┌────────────────┐  │       │  ┌──────────────────────┐   │  │
+│  │  ──────────────────  │       │  │  Streamlit     │  │       │  │  CloudWatch Metrics  │   │  │
+│  │                      │       │  │  App           │  │       │  └──────────────────────┘   │  │
+│  └──────────────────────┘       │  │                │  │       │                             │  │
+│                                 │  │                │  │       │  ┌──────────────────────┐   │  │
+│                                 │  │  Tabs:         │  │       │  │  EC2 Describe API    │   │  │
+│                                 │  │  7 views       │  │       │  └──────────────────────┘   │  │
+│                                 │  │                │  │       │                             │  │
+│                                 │  └────────────────┘  │       │  ┌──────────────────────┐   │  │
+│                                 │                      │       │  │  CloudTrail          │   │  │
+│                                 │  ┌────────────────┐  │       │  └──────────────────────┘   │  │
 │                                 │  │  IAM Role      │  │       └─────────────────────────────┘  │
 │                                 │  └────────────────┘  │       ┌─────────────────────────────┐  │
-│                                 └──────────────────────┘       │  AWS APIs (boto3)          │  │
-│                                                                 └─────────────────────────────┘  │
+│                                 └──────────────────────┘       │  AWS APIs (boto3)           │  │
+│                                                                └─────────────────────────────┘  │
 │                                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -68,20 +68,20 @@ The dashboard aggregates security events from three AWS data sources — CloudWa
 
 | Source                   | What it provides                                                                                      |
 | :----------------------- | :---------------------------------------------------------------------------------------------------- |
-| CloudWatch Logs Insights | SSH authentication events (auth.log), sudo activity, privilege escalation                           |
+| CloudWatch Logs Insights | SSH authentication events (auth.log), sudo activity, privilege escalation                             |
 | CloudWatch Metrics       | CPU, network I/O, status checks for monitored EC2 instances                                           |
 | CloudTrail               | Console login events, access key creation, IAM activity                                               |
 
 ## Requirements
 
-| Component            | Minimum                |
-| :------------------- | :--------------------- |
-| OS                   | Ubuntu 22.04+ or Debian 11+ |
-| Python               | 3.10+                  |
-| Memory               | 512 MB RAM (dashboard idle) |
-| AWS credentials      | IAM role on EC2 or `~/.aws/credentials` |
+| Component            | Minimum                                          |
+| :------------------- | :----------------------------------------------- |
+| OS                   | Ubuntu 22.04+ or Debian 11+                      |
+| Python               | 3.10+                                            |
+| Memory               | 512 MB RAM (dashboard idle)                      |
+| AWS credentials      | IAM role on EC2 or `~/.aws/credentials`          |
 | CloudWatch Logs      | `/var/log/auth.log` shipped via CloudWatch Agent |
-| Port                 | 8501 (Streamlit default) |
+| Port                 | 8501 (Streamlit default)                         |
 
 ## Installation
 
@@ -148,15 +148,15 @@ View logs: `sudo journalctl -u soc-dashboard -f`
 
 ### SSH events
 
-| Event                                                | Severity | Finding Type                  |
-| :--------------------------------------------------- | :------- | :---------------------------- |
-| Accepted publickey — untrusted fingerprint           | CRITICAL | UNAUTHORIZED_KEY_ACCEPTED     |
-| Accepted publickey — trusted key, untrusted user     | HIGH     | ANOMALOUS_USER_LOGIN          |
-| Accepted publickey — trusted key & user              | —        | Skipped                       |
+| Event                                                | Severity | Finding Type                       |
+| :--------------------------------------------------- | :------- | :--------------------------------- |
+| Accepted publickey — untrusted fingerprint           | CRITICAL | UNAUTHORIZED_KEY_ACCEPTED          |
+| Accepted publickey — trusted key, untrusted user     | HIGH     | ANOMALOUS_USER_LOGIN               |
+| Accepted publickey — trusted key & user              | —        | Skipped                            |
 | Failed password / publickey                          | HIGH     | FAILED_PASSWORD / FAILED_PUBLICKEY |
-| Invalid user                                         | HIGH     | INVALID_USER                  |
-| Brute-force (≥5 failures from same IP)               | CRITICAL | BRUTE_FORCE (consolidated)    |
-| Suspicious sudo commands                             | MEDIUM   | PRIVILEGE_ESCALATION          |
+| Invalid user                                         | HIGH     | INVALID_USER                       |
+| Brute-force (≥5 failures from same IP)               | CRITICAL | BRUTE_FORCE (consolidated)         |
+| Suspicious sudo commands                             | MEDIUM   | PRIVILEGE_ESCALATION               |
 
 ### CloudTrail events
 
