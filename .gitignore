@@ -7,4 +7,6 @@ __pycache__/
 reports/
 .venv/
 .vscode/
-*:Zone.Identifier
+# SSH keys - NEVER commit these
+keys/
+*.pem
