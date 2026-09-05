@@ -634,12 +634,27 @@ def fetch_findings():
             if source_ip and source_ip != "N/A":
                 ip_fail_counts.setdefault(source_ip, []).append(fail)
 
+        # Determine which IPs will get a consolidated brute-force incident.
+        # These IPs' individual failed-login incidents are suppressed so the
+        # dashboard / investigation console shows only the consolidated rollup.
+        BRUTE_FORCE_THRESHOLD = 5
+        brute_force_ips = {ip for ip, fails in ip_fail_counts.items() if len(fails) >= BRUTE_FORCE_THRESHOLD}
+
         # Two-pass directional dedup: FAILED_LOGIN/CONNECTION_RESET/NO_IDENTIFICATION
-        # entries are redundant if a PRIMARY entry exists from the same IP within 2s
+        # entries are redundant if a PRIMARY entry exists from the same IP within 2s.
+        # Entries from brute-force IPs are skipped entirely — the consolidated
+        # BRUTE_FORCE rollup (created in the next block) replaces them.
         PRIMARY_TYPES = {"INVALID_USER", "FAILED_PASSWORD", "FAILED_PUBLICKEY", "AUTHENTICATION_FAILURE"}
         for inc in all_failed_incidents:
-            ft = inc.get("finding_type")
             sip = inc.get("source_ip")
+
+            # Skip individual incidents for IPs that will get a consolidated
+            # brute-force rollup — the rollup below creates a single
+            # BRUTE_FORCE incident with attack_count summarising all attempts.
+            if sip in brute_force_ips:
+                continue
+
+            ft = inc.get("finding_type")
             ts_p = inc.get("timestamp")
 
             is_pairing = ft in ("FAILED_LOGIN", "CONNECTION_RESET", "NO_IDENTIFICATION")
